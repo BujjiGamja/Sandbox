@@ -114,16 +114,27 @@ def get_market_briefing() -> str:
 
     print("🔍 Claude API 호출 중 (웹 검색 포함)...")
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-opus-4-6",
         max_tokens=4096,
         tools=[
             {
                 "type": "web_search_20250305",
                 "name": "web_search",
-                "max_uses": 7,  #검색 횟수 허용
+                "max_uses": 7,  # 토큰 한도 초과 방지
             }
         ],
-        messages=[{"role": "user", "content": PROMPT}],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
+        ],
     )
 
     # 텍스트 블록만 추출
@@ -144,28 +155,49 @@ def get_market_briefing() -> str:
 # ────────────────────────────────────────────
 # Telegram 전송 (4096자 초과 시 분할 전송)
 # ────────────────────────────────────────────
+def split_text(text: str, max_len: int = 3800) -> list[str]:
+    """텍스트를 섹션(이모지 헤더) 단위로 분할, 섹션이 너무 크면 줄 단위로 추가 분할"""
+    # 이모지 헤더 기준으로 섹션 분리
+    import re
+    section_pattern = re.compile(r'(?=\n(?:📊|🇰🇷|🇺🇸|🏛️|🥇|₿|📋|🔑|📅|⚠️))')
+    sections = section_pattern.split(text)
+
+    chunks = []
+    current = ""
+
+    for section in sections:
+        # 섹션 자체가 max_len 초과하면 줄 단위로 쪼개기
+        if len(section) > max_len:
+            for line in section.split("\n"):
+                if len(current) + len(line) + 1 > max_len:
+                    if current.strip():
+                        chunks.append(current.strip())
+                    current = line
+                else:
+                    current += "\n" + line
+        elif len(current) + len(section) > max_len:
+            if current.strip():
+                chunks.append(current.strip())
+            current = section
+        else:
+            current += section
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    return chunks
+
+
 def send_telegram(text: str) -> None:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    MAX_LEN = 4000  # Telegram 메시지 최대 길이 (여유 있게 설정)
-
-    # 긴 텍스트를 줄 단위로 분할
-    chunks = []
-    current_chunk = ""
-    for line in text.split("\n"):
-        if len(current_chunk) + len(line) + 1 > MAX_LEN:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = line
-        else:
-            current_chunk += "\n" + line
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-
+    chunks = split_text(text)
     print(f"📤 Telegram 전송 시작 ({len(chunks)}개 메시지)...")
+
     for i, chunk in enumerate(chunks, 1):
+        # 1차: Markdown 시도
         payload = {
             "chat_id": chat_id,
             "text": chunk,
@@ -174,8 +206,8 @@ def send_telegram(text: str) -> None:
         }
         resp = requests.post(url, json=payload, timeout=15)
 
+        # 2차: Markdown 실패 시 plain text 재시도
         if not resp.ok:
-            # Markdown 파싱 오류 시 plain text 재시도
             payload["parse_mode"] = ""
             resp = requests.post(url, json=payload, timeout=15)
 
