@@ -1,0 +1,32 @@
+name: 📊 Daily Market Briefing
+
+on:
+  schedule:
+    # 매일 오전 10시 KST (= UTC 01:00)
+    - cron: '0 1 * * 1-5'  # 월~금 (UTC 기준)
+  workflow_dispatch:  # 수동 실행도 가능
+
+jobs:
+  market-briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install anthropic requests
+
+      - name: Run market briefing
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/run_briefing.py
