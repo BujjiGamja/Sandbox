@@ -197,19 +197,13 @@ def send_telegram(text: str) -> None:
     print(f"📤 Telegram 전송 시작 ({len(chunks)}개 메시지)...")
 
     for i, chunk in enumerate(chunks, 1):
-        # 1차: Markdown 시도
+        # Markdown 표(|) 파싱 오류 방지 위해 plain text로 전송
         payload = {
             "chat_id": chat_id,
             "text": chunk,
-            "parse_mode": "Markdown",
             "disable_web_page_preview": True,
         }
         resp = requests.post(url, json=payload, timeout=15)
-
-        # 2차: Markdown 실패 시 plain text 재시도
-        if not resp.ok:
-            payload["parse_mode"] = ""
-            resp = requests.post(url, json=payload, timeout=15)
 
         if not resp.ok:
             print(f"❌ 메시지 {i}/{len(chunks)} 전송 실패: {resp.text}")
