@@ -120,7 +120,7 @@ def get_market_briefing() -> str:
             {
                 "type": "web_search_20250305",
                 "name": "web_search",
-                "max_uses": 15,  # 충분한 검색 횟수 허용
+                "max_uses": 7,  #검색 횟수 허용
             }
         ],
         messages=[{"role": "user", "content": PROMPT}],
