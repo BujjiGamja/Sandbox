@@ -224,7 +224,7 @@ def run_agent2(client: anthropic.Anthropic, market_data: dict) -> str:
 # ────────────────────────────────────────────
 # Telegram 전송
 # ────────────────────────────────────────────
-def split_text(text: str, max_len: int = 3800) -> list[str]:
+def split_text(text: str, max_len: int = 2500) -> list[str]:
     import re
     section_pattern = re.compile(r'(?=\n(?:📊|🇰🇷|🇺🇸|🥇|₿|📋|🔑|📅|⚠️))')
     sections = section_pattern.split(text)
