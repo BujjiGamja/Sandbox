@@ -31,7 +31,7 @@ PROMPT = f"""
 
 모든 데이터는 최신 종가 또는 실시간 기준 (날짜 명시)
 뉴스는 24시간 이내 우선
-가격/지표는 신뢰 가능한 소스 교차 확인 (Investing.com, Bloomberg, Seeking Alpha 우선)
+가격/지표는 신뢰 가능한 소스 교차 확인 (Investing.com, Seeking Alpha 우선)
 Polymarket 예측 데이터 적극 참조 (휴전 확률, 금리 인하 확률 등)
 프리마켓/선물 데이터 포함
 
@@ -74,9 +74,9 @@ Fear & Greed Index (수치 + 단계)
 
 [추천 규칙]
 
-대상: 삼성전자, 미국채선물, QQQ, SCHD, VOO, 퇴직연금(S&P500/NIFTY50/TDF2050), BTC, ETH
+대상: 삼성전자, 미국채선물, QQQ, SCHD, BTC, ETH
 판단: 매수 / 분할매수 / 보유 / 관망 / 매도
-각 2~3문장 근거
+각 2문장 근거
 확신도에 따라 표현 강도 조절
 표로 정리
 단정적 표현 금지
