@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 KST = timezone(timedelta(hours=9))
 NOW_KST = datetime.now(KST)
 TODAY_STR = NOW_KST.strftime("%Y년 %m월 %d일")
-WEEKDAY_KR = ["월", "화", "수", "목", "금", "토", "일"][NOW_KST.weekday()]
+WEEKDAY_KR = ["월", "화", "수", "목", "금"][NOW_KST.weekday()]
 
 # ────────────────────────────────────────────
 # Agent 1 프롬프트: 검색 → JSON 추출
