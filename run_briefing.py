@@ -24,8 +24,13 @@ WEEKDAY_KR = ["월", "화", "수", "목", "금", "토", "일"][NOW_KST.weekday()
 # ────────────────────────────────────────────
 AGENT1_PROMPT = f"""
 오늘은 {TODAY_STR} ({WEEKDAY_KR}요일)이다.
-아래 항목들을 웹 검색하여 핵심 수치만 추출하고, 반드시 JSON 형식으로만 응답하라.
-설명, 해석, 마크다운 없이 순수 JSON만 출력할 것.
+아래 항목들을 웹 검색하여 핵심 수치만 추출하라.
+
+[출력 규칙 - 반드시 준수]
+- 응답은 반드시 {{ 로 시작하고 }} 로 끝나는 순수 JSON만 출력할 것
+- 설명, 해석, 마크다운 코드블록(```), 주석 절대 금지
+- 첫 글자가 반드시 {{ 이어야 함
+- 데이터를 찾지 못한 경우 null로 표기할 것
 
 검색 항목:
 1. 코스피 최근 종가 및 등락률
@@ -172,16 +177,31 @@ def run_agent1(client: anthropic.Anthropic) -> dict:
     ]
     raw_text = "\n".join(text_parts).strip()
 
-    # JSON 파싱
+    # JSON 파싱 (3단계 시도)
+    import re as _re
+
+    # 1차: 마크다운 코드블록 제거 후 파싱
+    clean = raw_text.replace("```json", "").replace("```", "").strip()
     try:
-        # 마크다운 코드블록 제거 후 파싱
-        clean = raw_text.replace("```json", "").replace("```", "").strip()
         data = json.loads(clean)
-        print(f"✅ [Agent 1] 데이터 수집 완료")
+        print(f"✅ [Agent 1] 데이터 수집 완료 (1차 파싱 성공)")
         return data
     except json.JSONDecodeError:
-        print(f"⚠️ [Agent 1] JSON 파싱 실패, 원본 텍스트 사용")
-        return {"raw": raw_text}
+        pass
+
+    # 2차: {{ }} 사이 JSON 블록만 추출
+    match = _re.search(r'\{[\s\S]*\}', clean)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            print(f"✅ [Agent 1] 데이터 수집 완료 (2차 파싱 성공)")
+            return data
+        except json.JSONDecodeError:
+            pass
+
+    # 3차: 파싱 실패 시 경고 후 원본 텍스트 사용
+    print(f"⚠️ [Agent 1] JSON 파싱 실패, 원본 텍스트로 분석 진행")
+    return {"raw": raw_text}
 
 
 # ────────────────────────────────────────────
@@ -227,16 +247,18 @@ def run_agent2(client: anthropic.Anthropic, market_data: dict) -> str:
 def split_text(text: str, max_len: int = 2500) -> list[str]:
     import re
 
-    # 1. 📋 섹션을 먼저 강제 분리
-    portfolio_pattern = re.compile(r'(\n📋)')
+    # 1. 📋 섹션을 먼저 강제 분리 (앞 공백/줄바꿈 무관하게 탐지)
+    portfolio_pattern = re.compile(r'(📋)')
     parts = portfolio_pattern.split(text, maxsplit=1)
 
     if len(parts) == 3:
         before_portfolio = parts[0]
-        portfolio_section = parts[1] + parts[2]  # "\n📋" + 나머지
+        portfolio_section = parts[1] + parts[2]  # "📋" + 나머지
+        print(f"📋 섹션 분리 성공 (앞부분: {len(before_portfolio)}자, 📋 섹션: {len(portfolio_section)}자)")
     else:
         before_portfolio = text
         portfolio_section = None
+        print(f"⚠️ 📋 섹션을 찾지 못함, 전체 텍스트 분할")
 
     def chunk_text(t):
         """텍스트를 max_len 기준으로 섹션 단위 분할"""
