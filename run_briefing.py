@@ -152,7 +152,7 @@ def run_agent1(client: anthropic.Anthropic) -> dict:
             {
                 "type": "web_search_20250305",
                 "name": "web_search",
-                "max_uses": 7,
+                "max_uses": 10,
             }
         ],
         messages=[
