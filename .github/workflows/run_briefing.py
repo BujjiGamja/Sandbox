@@ -17,7 +17,7 @@ from datetime import datetime, timezone, timedelta
 KST = timezone(timedelta(hours=9))
 NOW_KST = datetime.now(KST)
 TODAY_STR = NOW_KST.strftime("%Y년 %m월 %d일")
-WEEKDAY_KR = ["월", "화", "수", "목", "금"][NOW_KST.weekday()]
+WEEKDAY_KR = ["월", "화", "수", "목", "금", "토", "일"][NOW_KST.weekday()]
 
 # ────────────────────────────────────────────
 # Agent 1 프롬프트: 검색 → JSON 추출
@@ -226,30 +226,62 @@ def run_agent2(client: anthropic.Anthropic, market_data: dict) -> str:
 # ────────────────────────────────────────────
 def split_text(text: str, max_len: int = 2500) -> list[str]:
     import re
-    section_pattern = re.compile(r'(?=\n(?:📊|🇰🇷|🇺🇸|🥇|₿|📋|🔑|📅|⚠️))')
-    sections = section_pattern.split(text)
 
-    chunks = []
-    current = ""
+    # 1. 📋 섹션을 먼저 강제 분리
+    portfolio_pattern = re.compile(r'(\n📋)')
+    parts = portfolio_pattern.split(text, maxsplit=1)
 
-    for section in sections:
-        if len(section) > max_len:
-            for line in section.split("\n"):
+    if len(parts) == 3:
+        before_portfolio = parts[0]
+        portfolio_section = parts[1] + parts[2]  # "\n📋" + 나머지
+    else:
+        before_portfolio = text
+        portfolio_section = None
+
+    def chunk_text(t):
+        """텍스트를 max_len 기준으로 섹션 단위 분할"""
+        section_pattern = re.compile(r'(?=\n(?:📊|🇰🇷|🇺🇸|🥇|₿|🔑|📅|⚠️))')
+        sections = section_pattern.split(t)
+        result = []
+        current = ""
+        for section in sections:
+            if len(section) > max_len:
+                for line in section.split("\n"):
+                    if len(current) + len(line) + 1 > max_len:
+                        if current.strip():
+                            result.append(current.strip())
+                        current = line
+                    else:
+                        current += "\n" + line
+            elif len(current) + len(section) > max_len:
+                if current.strip():
+                    result.append(current.strip())
+                current = section
+            else:
+                current += section
+        if current.strip():
+            result.append(current.strip())
+        return result
+
+    chunks = chunk_text(before_portfolio)
+
+    # 2. 📋 섹션은 무조건 별도 메시지로 추가
+    if portfolio_section:
+        portfolio_section = portfolio_section.strip()
+        if len(portfolio_section) > max_len:
+            # 📋 섹션 자체가 너무 길면 줄 단위로 분할
+            current = ""
+            for line in portfolio_section.split("\n"):
                 if len(current) + len(line) + 1 > max_len:
                     if current.strip():
                         chunks.append(current.strip())
                     current = line
                 else:
                     current += "\n" + line
-        elif len(current) + len(section) > max_len:
             if current.strip():
                 chunks.append(current.strip())
-            current = section
         else:
-            current += section
-
-    if current.strip():
-        chunks.append(current.strip())
+            chunks.append(portfolio_section)
 
     return chunks
 
