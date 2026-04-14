@@ -3,7 +3,7 @@
 매일 오전 10시 KST, Claude AI가 최신 시황을 분석하여 Telegram으로 자동 전송합니다.
 
 ## 📁 파일 구조
-
+ 
 ```
 your-repo/
 ├── .github/
