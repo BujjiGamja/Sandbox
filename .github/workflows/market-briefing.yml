@@ -1,16 +1,14 @@
-name: 📊 Daily Market Briefing
+name: Daily Market Briefing
 
 on:
   schedule:
-    # 매일 오전 10시30 KST (= UTC 01:30)
-    - cron: '33 1 * * 1-5'  # 월~금 (UTC 기준)
-  workflow_dispatch:  # 수동 실행도 가능
+    - cron: '33 1 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   market-briefing:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,8 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install anthropic requests
+        run: pip install anthropic requests
 
       - name: Run market briefing
         env:
