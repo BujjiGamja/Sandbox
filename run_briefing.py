@@ -1,14 +1,17 @@
 """
-매일 아침 시황 분석 - 2단계 에이전트 구조
-Agent 1: 웹 검색 → 핵심 데이터 JSON 추출
-Agent 2: JSON 데이터 → 시황 분석 + 포트폴리오 추천
+매일 아침 시황 분석 - 3단계 에이전트 구조
+Agent 1a: 한국/미국 시장 검색 → JSON
+Agent 1b: 자산/이벤트 검색 → JSON (병렬 실행)
+Agent 2: 통합 JSON → 시황 분석 + 포트폴리오 추천
 """
 
 import os
 import sys
 import json
+import re
 import requests
 import anthropic
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
 # ────────────────────────────────────────────
@@ -19,18 +22,22 @@ NOW_KST = datetime.now(KST)
 TODAY_STR = NOW_KST.strftime("%Y년 %m월 %d일")
 WEEKDAY_KR = ["월", "화", "수", "목", "금", "토", "일"][NOW_KST.weekday()]
 
+OUTPUT_RULES = """
+[출력 규칙 - 반드시 준수]
+- 응답은 반드시 { 로 시작하고 } 로 끝나는 순수 JSON만 출력할 것
+- 설명, 해석, 마크다운 코드블록(```), 주석 절대 금지
+- 첫 글자가 반드시 { 이어야 함
+- 데이터를 찾지 못한 경우 null로 표기할 것
+"""
+
 # ────────────────────────────────────────────
-# Agent 1 프롬프트: 검색 → JSON 추출
+# Agent 1a 프롬프트: 한국/미국 시장
 # ────────────────────────────────────────────
-AGENT1_PROMPT = f"""
+AGENT1A_PROMPT = f"""
 오늘은 {TODAY_STR} ({WEEKDAY_KR}요일)이다.
 아래 항목들을 웹 검색하여 핵심 수치만 추출하라.
 
-[출력 규칙 - 반드시 준수]
-- 응답은 반드시 {{ 로 시작하고 }} 로 끝나는 순수 JSON만 출력할 것
-- 설명, 해석, 마크다운 코드블록(```), 주석 절대 금지
-- 첫 글자가 반드시 {{ 이어야 함
-- 데이터를 찾지 못한 경우 null로 표기할 것
+{OUTPUT_RULES}
 
 검색 항목:
 1. 코스피 최근 종가 및 등락률
@@ -42,15 +49,9 @@ AGENT1_PROMPT = f"""
 7. VIX 현재 수치 및 전일 대비 변동
 8. 미국 선물/프리마켓 현재 동향 및 수치
 9. 미국 시장 주요 상승/하락 요인 (1~2개)
-10. 금 현재 가격(달러/온스) 및 전일 대비 변동
-11. 비트코인 현재 가격 및 24시간 변동률, 주요 지지/저항선
-12. 오늘/내일 주요 경제지표 발표 일정 (시간 포함)
-13. 미국 10년물 국채 수익률 및 전일 대비 변동(bp)
 
 출력 형식 (이 구조 그대로):
 {{
-  "date": "{TODAY_STR}",
-  "weekday": "{WEEKDAY_KR}",
   "kospi": {{"price": null, "change_pct": null}},
   "samsung": {{
     "prev_close": null, "prev_close_date": null,
@@ -67,7 +68,27 @@ AGENT1_PROMPT = f"""
     "vix": {{"value": null, "change": null}},
     "futures": {{"sp500": null, "nasdaq": null}},
     "key_factors": []
-  }},
+  }}
+}}
+"""
+
+# ────────────────────────────────────────────
+# Agent 1b 프롬프트: 자산/이벤트
+# ────────────────────────────────────────────
+AGENT1B_PROMPT = f"""
+오늘은 {TODAY_STR} ({WEEKDAY_KR}요일)이다.
+아래 항목들을 웹 검색하여 핵심 수치만 추출하라.
+
+{OUTPUT_RULES}
+
+검색 항목:
+1. 금 현재 가격(달러/온스) 및 전일 대비 변동
+2. 비트코인 현재 가격, 24시간 변동률, 주요 지지/저항선
+3. 미국 10년물 국채 수익률 및 전일 대비 변동(bp)
+4. 오늘/내일 주요 경제지표 발표 일정 (시간 포함)
+
+출력 형식 (이 구조 그대로):
+{{
   "gold": {{"price_usd": null, "change_pct": null, "key_factor": null}},
   "crypto": {{
     "bitcoin": {{"price": null, "change_24h": null, "support": null, "resistance": null}}
@@ -78,7 +99,7 @@ AGENT1_PROMPT = f"""
 """
 
 # ────────────────────────────────────────────
-# Agent 2 프롬프트: JSON → 시황 분석
+# Agent 2 프롬프트: 통합 JSON → 시황 분석
 # ────────────────────────────────────────────
 AGENT2_PROMPT_TEMPLATE = """
 너는 한국 개인투자자를 위한 전문 시황 애널리스트다.
@@ -92,9 +113,7 @@ AGENT2_PROMPT_TEMPLATE = """
 [입력 데이터]
 {JSON_DATA}
 
-[분석 요구]
-
-## [출력 형식]
+[출력 형식]
 제목: 📊 {TODAY_STR} ({WEEKDAY_KR}요일) 아침 시황 브리핑
 
 **도입부**: 오늘 시장의 전체 톤을 2~3문장으로 요약 (리스크 온/오프, 핵심 테마, 전일 대비 분위기)
@@ -139,104 +158,97 @@ AGENT2_PROMPT_TEMPLATE = """
 ⚠️ 본 분석은 참고 의견이며, 투자 판단은 본인 책임입니다. 저는 금융 전문가가 아닙니다.
 """
 
+
 # ────────────────────────────────────────────
-# Agent 1: 웹 검색 → JSON 데이터 수집
+# JSON 파싱 헬퍼
 # ────────────────────────────────────────────
-def run_agent1(client: anthropic.Anthropic) -> dict:
-    print("🔍 [Agent 1] 웹 검색 및 데이터 수집 시작...")
-
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2000,
-        tools=[
-            {
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": 10,
-            }
-        ],
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": AGENT1_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-            }
-        ],
-    )
-
-    # 텍스트 블록 추출
-    text_parts = [
-        block.text
-        for block in response.content
-        if hasattr(block, "text") and block.text
-    ]
-    raw_text = "\n".join(text_parts).strip()
-
-    # JSON 파싱 (3단계 시도)
-    import re as _re
-
-    # 1차: 마크다운 코드블록 제거 후 파싱
+def parse_json(raw_text: str, agent_name: str) -> dict:
     clean = raw_text.replace("```json", "").replace("```", "").strip()
+
+    # 1차: 직접 파싱
     try:
         data = json.loads(clean)
-        print(f"✅ [Agent 1] 데이터 수집 완료 (1차 파싱 성공)")
+        print(f"✅ [{agent_name}] 파싱 성공 (1차)")
         return data
     except json.JSONDecodeError:
         pass
 
-    # 2차: {{ }} 사이 JSON 블록만 추출
-    match = _re.search(r'\{[\s\S]*\}', clean)
+    # 2차: { } 블록 추출 후 파싱
+    match = re.search(r'\{[\s\S]*\}', clean)
     if match:
         try:
             data = json.loads(match.group(0))
-            print(f"✅ [Agent 1] 데이터 수집 완료 (2차 파싱 성공)")
+            print(f"✅ [{agent_name}] 파싱 성공 (2차)")
             return data
         except json.JSONDecodeError:
             pass
 
-    # 3차: 파싱 실패 시 경고 후 원본 텍스트 사용
-    print(f"⚠️ [Agent 1] JSON 파싱 실패, 원본 텍스트로 분석 진행")
+    print(f"⚠️ [{agent_name}] JSON 파싱 실패, 원본 텍스트 사용")
     return {"raw": raw_text}
 
 
 # ────────────────────────────────────────────
-# Agent 2: JSON → 시황 분석
+# Agent 1a: 한국/미국 시장 검색
+# ────────────────────────────────────────────
+def run_agent1a(client: anthropic.Anthropic) -> dict:
+    print("🔍 [Agent 1a] 한국/미국 시장 검색 시작...")
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=2000,
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+        messages=[{
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": AGENT1A_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        }],
+    )
+    raw = "\n".join(b.text for b in response.content if hasattr(b, "text") and b.text)
+    return parse_json(raw, "Agent 1a")
+
+
+# ────────────────────────────────────────────
+# Agent 1b: 자산/이벤트 검색
+# ────────────────────────────────────────────
+def run_agent1b(client: anthropic.Anthropic) -> dict:
+    print("🔍 [Agent 1b] 자산/이벤트 검색 시작...")
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1000,
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+        messages=[{
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": AGENT1B_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        }],
+    )
+    raw = "\n".join(b.text for b in response.content if hasattr(b, "text") and b.text)
+    return parse_json(raw, "Agent 1b")
+
+
+# ────────────────────────────────────────────
+# Agent 2: 통합 JSON → 시황 분석
 # ────────────────────────────────────────────
 def run_agent2(client: anthropic.Anthropic, market_data: dict) -> str:
     print("📝 [Agent 2] 시황 분석 시작...")
-
     prompt = AGENT2_PROMPT_TEMPLATE.format(
         JSON_DATA=json.dumps(market_data, ensure_ascii=False, indent=2),
         TODAY_STR=TODAY_STR,
         WEEKDAY_KR=WEEKDAY_KR,
     )
-
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=4096,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
+        messages=[{"role": "user", "content": prompt}],
     )
-
-    text_parts = [
-        block.text
-        for block in response.content
-        if hasattr(block, "text") and block.text
-    ]
-    result = "\n".join(text_parts).strip()
-
+    result = "\n".join(b.text for b in response.content if hasattr(b, "text") and b.text).strip()
     if not result:
         raise ValueError("Agent 2로부터 응답을 받지 못했습니다.")
-
     print(f"✅ [Agent 2] 분석 완료 (총 {len(result)}자)")
     return result
 
@@ -245,25 +257,20 @@ def run_agent2(client: anthropic.Anthropic, market_data: dict) -> str:
 # Telegram 전송
 # ────────────────────────────────────────────
 def split_text(text: str, max_len: int = 2500) -> list[str]:
-    import re
-
-    # 1. 📋 섹션을 먼저 강제 분리 (앞 공백/줄바꿈 무관하게 탐지)
-    portfolio_pattern = re.compile(r'(📋)')
-    parts = portfolio_pattern.split(text, maxsplit=1)
+    # 1. 📋 섹션 강제 분리
+    parts = re.split(r'(📋)', text, maxsplit=1)
 
     if len(parts) == 3:
         before_portfolio = parts[0]
-        portfolio_section = parts[1] + parts[2]  # "📋" + 나머지
+        portfolio_section = parts[1] + parts[2]
         print(f"📋 섹션 분리 성공 (앞부분: {len(before_portfolio)}자, 📋 섹션: {len(portfolio_section)}자)")
     else:
         before_portfolio = text
         portfolio_section = None
-        print(f"⚠️ 📋 섹션을 찾지 못함, 전체 텍스트 분할")
+        print("⚠️ 📋 섹션을 찾지 못함, 전체 텍스트 분할")
 
     def chunk_text(t):
-        """텍스트를 max_len 기준으로 섹션 단위 분할"""
-        section_pattern = re.compile(r'(?=\n(?:📊|🇰🇷|🇺🇸|🥇|₿|🔑|📅|⚠️))')
-        sections = section_pattern.split(t)
+        sections = re.split(r'(?=\n(?:📊|🇰🇷|🇺🇸|🥇|₿|🔑|📅|⚠️))', t)
         result = []
         current = ""
         for section in sections:
@@ -287,11 +294,10 @@ def split_text(text: str, max_len: int = 2500) -> list[str]:
 
     chunks = chunk_text(before_portfolio)
 
-    # 2. 📋 섹션은 무조건 별도 메시지로 추가
+    # 2. 📋 섹션 별도 메시지로 추가
     if portfolio_section:
         portfolio_section = portfolio_section.strip()
         if len(portfolio_section) > max_len:
-            # 📋 섹션 자체가 너무 길면 줄 단위로 분할
             current = ""
             for line in portfolio_section.split("\n"):
                 if len(current) + len(line) + 1 > max_len:
@@ -317,12 +323,11 @@ def send_telegram(text: str) -> None:
     print(f"📤 Telegram 전송 시작 ({len(chunks)}개 메시지)...")
 
     for i, chunk in enumerate(chunks, 1):
-        payload = {
+        resp = requests.post(url, json={
             "chat_id": chat_id,
             "text": chunk,
             "disable_web_page_preview": True,
-        }
-        resp = requests.post(url, json=payload, timeout=15)
+        }, timeout=15)
 
         if not resp.ok:
             print(f"❌ 메시지 {i}/{len(chunks)} 전송 실패: {resp.text}")
@@ -331,22 +336,20 @@ def send_telegram(text: str) -> None:
 
 
 # ────────────────────────────────────────────
-# 실패 시 Telegram 오류 알림
+# 실패 알림
 # ────────────────────────────────────────────
 def send_error_notification(error: Exception) -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         return
-
-    msg = (
-        f"❌ 시황 브리핑 생성 실패\n\n"
-        f"날짜: {TODAY_STR} ({WEEKDAY_KR}요일)\n"
-        f"오류: {type(error).__name__}: {str(error)[:200]}"
-    )
     requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": msg},
+        json={"chat_id": chat_id, "text": (
+            f"❌ 시황 브리핑 생성 실패\n\n"
+            f"날짜: {TODAY_STR} ({WEEKDAY_KR}요일)\n"
+            f"오류: {type(error).__name__}: {str(error)[:200]}"
+        )},
         timeout=15,
     )
 
@@ -358,8 +361,22 @@ if __name__ == "__main__":
     try:
         client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-        # Agent 1: 데이터 수집
-        market_data = run_agent1(client)
+        # Agent 1a, 1b 병렬 실행
+        print("🚀 Agent 1a, 1b 병렬 검색 시작...")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_1a = executor.submit(run_agent1a, client)
+            future_1b = executor.submit(run_agent1b, client)
+            data_1a = future_1a.result()
+            data_1b = future_1b.result()
+
+        # 두 결과 병합
+        market_data = {
+            "date": TODAY_STR,
+            "weekday": WEEKDAY_KR,
+            **data_1a,
+            **data_1b,
+        }
+        print("✅ 데이터 병합 완료")
 
         # Agent 2: 분석
         briefing = run_agent2(client, market_data)
